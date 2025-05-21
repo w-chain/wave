@@ -1,3 +1,8 @@
+# WAVE
+WAVE is the first Yield catalyst on W Chain Network.
+Incentivizing Liquidity Providers on W Swap.
+Capture value from all W Chain's Ecosystem.
+
 ## Foundry
 
 **Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
