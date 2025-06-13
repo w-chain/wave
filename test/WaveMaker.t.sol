@@ -5,6 +5,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import { Test } from "forge-std/Test.sol";
 import { WaveMaker } from "../src/WaveMaker.sol";
+import { IWaveMaker } from "../src/interfaces/IWaveMaker.sol";
 import { WAVE } from "../src/Wave.sol";
 import { ACM } from "../src/ACM.sol";
 import { MockERC20 } from "../src/lib/MockERC20.sol";
@@ -169,26 +170,26 @@ contract WaveMakerTest is Test {
 
     function test_RevertWhenUnauthorized() public {
         vm.startPrank(user1);
-        vm.expectRevert(WaveMaker.Unauthorized.selector);
+        vm.expectRevert(IWaveMaker.Unauthorized.selector);
         waveMaker.updatePoolMultiplier(1, 20000);
 
-        vm.expectRevert(WaveMaker.Unauthorized.selector);
+        vm.expectRevert(IWaveMaker.Unauthorized.selector);
         waveMaker.updatePoolAllocation(1, 2000);
 
-        vm.expectRevert(WaveMaker.Unauthorized.selector);
+        vm.expectRevert(IWaveMaker.Unauthorized.selector);
         waveMaker.setWavePerBlock(2e18);
         vm.stopPrank();
     }
 
     function test_RevertOnInvalidParams() public {
         vm.startPrank(admin);
-        vm.expectRevert(WaveMaker.InvalidParams.selector);
+        vm.expectRevert(IWaveMaker.InvalidParams.selector);
         waveMaker.updatePoolMultiplier(1, 0);
 
-        vm.expectRevert(WaveMaker.InvalidParams.selector);
+        vm.expectRevert(IWaveMaker.InvalidParams.selector);
         waveMaker.updatePoolAllocation(1, 0);
 
-        vm.expectRevert(WaveMaker.ZeroAmount.selector);
+        vm.expectRevert(IWaveMaker.ZeroAmount.selector);
         waveMaker.setWavePerBlock(0);
         vm.stopPrank();
     }

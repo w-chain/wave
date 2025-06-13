@@ -6,39 +6,21 @@ import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.s
 
 import { IACM } from "./interfaces/IACM.sol";
 import { IWAVE } from "./interfaces/IWAVE.sol";
+import { IWaveMaker } from "./interfaces/IWaveMaker.sol";
+import { IPAPeriphery } from "./interfaces/IPAPeriphery.sol";
 import { WadRayMath } from "./lib/WadRayMath.sol";
 
 /// @title WaveMaker - A staking and reward distribution contract
 /// @notice This contract manages staking pools and WAVE token rewards distribution inspired by SushiSwap
 /// @dev Implements staking mechanism with multiple pools and reward calculation using WAD RAY math
-contract WaveMaker is ReentrancyGuard {
+contract WaveMaker is IWaveMaker, ReentrancyGuard {
     using WadRayMath for uint256;
     uint256 public constant BPS = 10000;
 
-    /// @notice User staking information
-    /// @param stakedAmount Amount of tokens staked by the user
-    /// @param rewardOffset Accumulated rewards offset for pending amount
-    struct User {
-        uint256 stakedAmount;
-        uint256 rewardOffset;
-    }
-
-    /// @notice Pool configuration and state
-    /// @param accWavePerShare Accumulated WAVE rewards per share, scaled by WAD
-    /// @param token The ERC20 token that can be staked in this pool
-    /// @param lastRewardBlock Last block number when rewards were distributed
-    /// @param allocation Pool's share of total reward allocation
-    /// @param multiplier Reward multiplier in BPS, maximum 65x
-    struct Pool {
-        uint256 accWavePerShare;
-        IERC20 token;
-        uint32 lastRewardBlock;
-        uint16 allocation;
-        uint16 multiplier;
-    }
-
     IACM public immutable ACM;
     IWAVE public immutable WAVE;
+
+    IPAPeriphery public paPeriphery;
 
     address public treasury;
     uint256 public wavePerBlock;
@@ -47,25 +29,6 @@ contract WaveMaker is ReentrancyGuard {
 
     Pool[] public pools;
     mapping(uint256 pid => mapping(address account => User)) public users;
-
-    event Deposit(address indexed user, uint256 indexed pid, uint256 amount);
-    event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
-    event Stake(address indexed user, uint256 amount);
-    event Unstake(address indexed user, uint256 amount);
-    event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
-    event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
-    event SetTreasury(address indexed treasury);
-    event SetWavePerBlock(uint256 wavePerBlock);
-    event SetStakingAllocationFactor(uint256 stakingAllocationFactor);
-    event AddPool(uint256 indexed pid, IERC20 indexed token, uint16 allocation, uint16 multiplier);
-    event UpdatePool(uint256 indexed pid, IERC20 indexed token, uint16 allocation, uint16 multiplier);
-    event PoolSynced(uint256 indexed pid, uint256 accWavePerShare, uint32 lastRewardBlock);
-
-    error ZeroAddress();
-    error ZeroAmount();
-    error Unauthorized();
-    error InvalidParams();
-    error InsufficientBalance();
 
     modifier onlyAdmin() {
         if (!ACM.isAdmin(msg.sender)) revert Unauthorized();
@@ -100,6 +63,79 @@ contract WaveMaker is ReentrancyGuard {
         stakingAllocationFactor = 3000; // 30% of the total allocation
     }
 
+    /// @notice Returns protocol information for frontend display
+    /// @return Protocol information including total pools, allocations, and parameters
+    function getProtocolInfo() external view returns (ProtocolInfo memory) {
+        return ProtocolInfo({
+            totalPools: pools.length,
+            totalAllocations: totalAllocations,
+            wavePerBlock: wavePerBlock,
+            stakingAllocationFactor: stakingAllocationFactor
+        });
+    }
+
+    /// @notice Returns information about all incentivized pools
+    /// @return Array of pool information structures
+    function getAllPoolsInfo() external view returns (PoolInfo[] memory) {
+        uint256 length = pools.length;
+        PoolInfo[] memory poolsInfo = new PoolInfo[](length);
+        
+        for (uint256 i = 0; i < length; i++) {
+            Pool storage pool = pools[i];
+            poolsInfo[i] = PoolInfo({
+                pid: i,
+                token: address(pool.token),
+                allocation: pool.allocation,
+                multiplier: pool.multiplier,
+                totalStaked: pool.token.balanceOf(address(this)),
+                accWavePerShare: pool.accWavePerShare,
+                lastRewardBlock: pool.lastRewardBlock
+            });
+        }
+        
+        return poolsInfo;
+    }
+
+    /// @notice Returns comprehensive user information across all pools
+    /// @param account User address to query
+    /// @return Complete user information including staking and rewards data
+    function getUserInfo(address account) external view returns (UserInfo memory) {
+        uint256 length = pools.length;
+        UserPoolInfo[] memory userPoolsInfo = new UserPoolInfo[](length);
+        uint256 totalStaked = 0;
+        uint256 totalPendingRewards = 0;
+        uint256 activePoolsCount = 0;
+        
+        // First pass: collect data for pools where user has stake
+        for (uint256 i = 0; i < length; i++) {
+            User storage user = users[i][account];
+            if (user.stakedAmount > 0) {
+                uint256 pending = _calculatePendingReward(i, account);
+                userPoolsInfo[activePoolsCount] = UserPoolInfo({
+                    pid: i,
+                    stakedAmount: user.stakedAmount,
+                    pendingReward: pending
+                });
+                totalStaked += user.stakedAmount;
+                totalPendingRewards += pending;
+                activePoolsCount++;
+            }
+        }
+        
+        // Create properly sized array with only active pools
+        UserPoolInfo[] memory activeUserPoolsInfo = new UserPoolInfo[](activePoolsCount);
+        for (uint256 i = 0; i < activePoolsCount; i++) {
+            activeUserPoolsInfo[i] = userPoolsInfo[i];
+        }
+        
+        return UserInfo({
+            totalStaked: totalStaked,
+            totalPendingRewards: totalPendingRewards,
+            personalMultiplier: _getPersonalMultiplier(account),
+            poolsInfo: activeUserPoolsInfo
+        });
+    }
+
     /// @notice Returns the total number of incentivized pools
     /// @return Number of pools
     function poolsLength() external view returns (uint256) {
@@ -111,17 +147,7 @@ contract WaveMaker is ReentrancyGuard {
     /// @param account User address
     /// @return Pending reward amount
     function pendingReward(uint256 pid, address account) external view returns (uint256) {
-        Pool storage pool = pools[pid];
-        User storage user = users[pid][account];
-        uint32 currentBlock = uint32(block.number);
-        uint256 accWavePerShare = pool.accWavePerShare;
-        uint256 supply = pool.token.balanceOf(address(this));
-        if (currentBlock > pool.lastRewardBlock && supply != 0) {
-            uint256 multiplier = (pool.multiplier * _getDelta(pool.lastRewardBlock, currentBlock) / BPS);
-            uint256 waveReward = (multiplier * pool.allocation) / totalAllocations;
-            accWavePerShare += waveReward.wadDiv(supply);
-        }
-        return user.stakedAmount.wadMul(accWavePerShare) - user.rewardOffset;
+        return _calculatePendingReward(pid, account);
     }
 
     /// @notice Returns the amount of tokens staked by a user in a specific pool
@@ -169,6 +195,21 @@ contract WaveMaker is ReentrancyGuard {
     /// @param amount Amount of WAVE tokens to unstake
     function unstake(uint256 amount) external nonReentrant {
         return _withdraw(0, amount);
+    }
+
+    /// @notice Harvests rewards for all staked pools
+    function harvestAll() external nonReentrant {
+        address account = msg.sender;
+        uint256 length = pools.length;
+        for (uint256 i = 0; i < length; i++) {
+            User storage user = users[i][account];
+            if (user.stakedAmount > 0) {
+                uint256 pending = _calculatePendingReward(i, account);
+                if (pending > 0) {
+                    _deposit(i, 0);
+                }
+            }
+        }
     }
 
     /// @notice Updates the staking allocation factor
@@ -242,6 +283,11 @@ contract WaveMaker is ReentrancyGuard {
         if (_treasury == address(0)) revert ZeroAddress();
         treasury = _treasury;
         emit SetTreasury(_treasury);
+    }
+
+    function setPAPeriphery(address _paPeriphery) external onlyAdmin {
+        paPeriphery = IPAPeriphery(_paPeriphery);
+        emit SetPAPeriphery(_paPeriphery);
     }
 
     /// @notice Allows emergency withdrawal without caring about rewards
@@ -327,8 +373,9 @@ contract WaveMaker is ReentrancyGuard {
         if (user.stakedAmount > 0) {
             uint256 pending = user.stakedAmount.wadMul(pool.accWavePerShare) - user.rewardOffset;
             if (pending > 0) {
-                WAVE.mint(msg.sender, pending);
-                emit Harvest(msg.sender, pid, pending);
+                uint256 harvest = pending.wadMul(_getPersonalMultiplier(msg.sender));
+                WAVE.mint(msg.sender, harvest);
+                emit Harvest(msg.sender, pid, harvest);
             }
         }
         if (amount > 0) {
@@ -355,8 +402,9 @@ contract WaveMaker is ReentrancyGuard {
         _sync(pid);
         uint256 pending = (user.stakedAmount.wadMul(pool.accWavePerShare)) - user.rewardOffset;
         if (pending > 0) {
-            WAVE.mint(msg.sender, pending);
-            emit Harvest(msg.sender, pid, pending);
+            uint256 harvest = pending.wadMul(_getPersonalMultiplier(msg.sender));
+            WAVE.mint(msg.sender, harvest);
+            emit Harvest(msg.sender, pid, harvest);
         }
         if (amount > 0) {
             user.stakedAmount -= amount;
@@ -368,5 +416,32 @@ contract WaveMaker is ReentrancyGuard {
             }
         }
         user.rewardOffset = user.stakedAmount.wadMul(pool.accWavePerShare);
+    }
+
+    function _getPersonalMultiplier(address account) internal view returns (uint256) {
+        if (address(paPeriphery) == address(0)) return WadRayMath.WAD;
+        return paPeriphery.getWAVEMultiplier(account);
+    }
+
+    /// @notice Internal function to calculate pending rewards for a user in a specific pool
+    /// @param pid Pool ID
+    /// @param account User address
+    /// @return Pending reward amount
+    function _calculatePendingReward(uint256 pid, address account) internal view returns (uint256) {
+        Pool storage pool = pools[pid];
+        User storage user = users[pid][account];
+        uint32 currentBlock = uint32(block.number);
+        uint256 accWavePerShare = pool.accWavePerShare;
+        uint256 supply = pool.token.balanceOf(address(this));
+        
+        if (currentBlock > pool.lastRewardBlock && supply != 0) {
+            uint256 multiplier = (pool.multiplier * _getDelta(pool.lastRewardBlock, currentBlock) / BPS);
+            uint256 waveReward = (multiplier * pool.allocation) / totalAllocations;
+            accWavePerShare += waveReward.wadDiv(supply);
+        }
+        
+        uint256 baseReward = user.stakedAmount.wadMul(accWavePerShare) - user.rewardOffset;
+        uint256 personalMultiplier = _getPersonalMultiplier(account);
+        return baseReward.wadMul(personalMultiplier);
     }
 }
