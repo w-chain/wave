@@ -9,10 +9,15 @@ contract WAVE is ERC20Burnable {
 
     constructor(address acm) ERC20("WAVE", "WAVE") {
         ACM = IACM(acm);
+        _initLiquidity();
     }
 
     function mint(address to, uint256 amount) external {
         require(ACM.isFactory(msg.sender), "WAVE: UNAUTHORIZED");
         _mint(to, amount);
+    }
+
+    function _initLiquidity() private {
+        _mint(msg.sender, 200000 ether);
     }
 }

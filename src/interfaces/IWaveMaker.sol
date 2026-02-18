@@ -30,6 +30,8 @@ interface IWaveMaker {
   event Withdraw(address indexed user, uint256 indexed pid, uint256 amount);
   event Stake(address indexed user, uint256 amount);
   event Unstake(address indexed user, uint256 amount);
+  event DepositETH(address indexed user, uint256 amount);
+  event WithdrawETH(address indexed user, uint256 amount);
   event EmergencyWithdraw(address indexed user, uint256 indexed pid, uint256 amount);
   event Harvest(address indexed user, uint256 indexed pid, uint256 amount);
   event SetTreasury(address indexed treasury);
@@ -107,6 +109,9 @@ interface IWaveMaker {
   function withdraw(uint256 pid, uint256 amount) external;
   function stake(uint256 amount) external;
   function unstake(uint256 amount) external;
+  function depositETH() external payable;
+  function withdrawETH(uint256 amount) external;
+  function initializeETHPool(address weth, uint16 allocation, uint32 startBlock) external;
   function harvestAll() external;
   
   /// @notice Returns protocol information for frontend display
