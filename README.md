@@ -123,7 +123,7 @@ sequenceDiagram
     
     WM->>Token: transferFrom(user, WM, amount)
     WM->>WM: Update user.stakedAmount
-    emit WM: Deposit(user, pid, amount)
+    Note right of WM: emit Deposit(user, pid, amount)
     deactivate WM
 ```
 
@@ -146,8 +146,8 @@ sequenceDiagram
     WM->>WM: _syncStakingAllocation()
     Note right of WM: Re-calculate Pool 0 allocation<br/>based on new total
     
-    emit WM: AddPool(...)
-    emit WM: UpdatePool(0, ...)
+    Note right of WM: emit AddPool(...)
+    Note right of WM: emit UpdatePool(0, ...)
     
     deactivate WM
 ```
